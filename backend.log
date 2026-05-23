@@ -1,0 +1,8 @@
+Mongo URI Loaded: Yes
+PORT: 5000
+Environment: development
+⏳ Connecting to MongoDB Atlas...
+(node:9520) [MONGOOSE] Warning: Duplicate schema index on {"siteCode":1} found. This is often due to declaring an index using both "index: true" and "schema.index()". Please remove the duplicate index definition.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✅ MongoDB Atlas Connected
+🚀 Server running on port 5000 (DB: atlas)

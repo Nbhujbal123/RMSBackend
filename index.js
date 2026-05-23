@@ -77,42 +77,53 @@ console.log("Environment:", process.env.NODE_ENV || "development");
 
 // ---------- MongoDB connection helper ----------
 const connectMongo = async () => {
-  // Common options: short selection timeout so Atlas failures are detected quickly
   const ATLAS_OPTS = {
-    family: 4,
-    serverSelectionTimeoutMS: 5000,   // give Atlas 5 s instead of the 30 s default
-    connectTimeoutMS: 10000,
+    serverSelectionTimeoutMS: 30000,  // 30 s — Atlas SRV + TLS can be slow on cold start
+    connectTimeoutMS: 30000,
+    socketTimeoutMS: 45000,
   };
   const LOCAL_OPTS = {
-    family: 4,
-    serverSelectionTimeoutMS: 5000,
+    serverSelectionTimeoutMS: 8000,
+    connectTimeoutMS: 8000,
   };
 
   if (process.env.MONGO_URI) {
     try {
+      console.log("⏳ Connecting to MongoDB Atlas...");
       await mongoose.connect(process.env.MONGO_URI, ATLAS_OPTS);
       console.log("✅ MongoDB Atlas Connected");
       return "atlas";
     } catch (atlasErr) {
-      console.warn("⚠️  Atlas unreachable:", atlasErr.message);
-      console.log("   → Falling back to local MongoDB...");
+      const msg = atlasErr.message || "";
+      console.error("❌ Atlas connection failed:", msg);
+
+      if (msg.includes("bad auth") || msg.includes("Authentication failed")) {
+        console.error("   → Check MONGO_URI username/password in .env");
+      } else if (msg.includes("ECONNREFUSED") || msg.includes("timed out") || msg.includes("ENOTFOUND")) {
+        console.error("   → IP not whitelisted in Atlas. Go to:");
+        console.error("     MongoDB Atlas → Network Access → Add IP Address → Allow from Anywhere (0.0.0.0/0)");
+      } else if (msg.includes("Cluster is paused") || msg.includes("paused")) {
+        console.error("   → Your Atlas cluster is paused. Log in to atlas.mongodb.com and resume it.");
+      }
+
+      console.log("   → Trying local MongoDB fallback...");
     }
   }
 
   if (process.env.FALLBACK_URI) {
     try {
+      console.log("⏳ Connecting to local MongoDB...");
       await mongoose.connect(process.env.FALLBACK_URI, LOCAL_OPTS);
       console.log("✅ Local MongoDB Connected (fallback)");
       return "local";
     } catch (localErr) {
       console.error("❌ Local MongoDB also failed:", localErr.message);
+      console.error("   → Make sure MongoDB is installed and running: mongod --dbpath /data/db");
     }
   }
 
-  console.error("❌ No MongoDB connection available.");
-  console.log("   Fix options:");
-  console.log("   1. Whitelist your IP in MongoDB Atlas → Network Access → Add IP");
-  console.log("   2. Install & start MongoDB locally (mongod)");
+  console.error("\n❌ No MongoDB connection available. Server cannot start.");
+  console.error("   Fix: Go to atlas.mongodb.com → Network Access → Add 0.0.0.0/0");
   process.exit(1);
 };
 

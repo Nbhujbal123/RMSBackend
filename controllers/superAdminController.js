@@ -25,68 +25,60 @@ const generateUniqueSiteCode = async (maxAttempts = 10) => {
 
 // Create a new restaurant with admin user
 exports.createRestaurant = async (req, res) => {
-  const session = await require("mongoose").startSession();
-  session.startTransaction();
-  
+  let savedRestaurant = null;
+
   try {
-    const { 
-      restaurantName, 
-      restaurantEmail, 
+    const {
+      restaurantName,
+      restaurantEmail,
       restaurantPhone,
-      adminName, 
-      adminEmail, 
-      adminMobile, 
-      adminPassword 
+      adminName,
+      adminEmail,
+      adminMobile,
+      adminPassword
     } = req.body;
 
     // Validation
     if (!restaurantName || !restaurantEmail || !restaurantPhone) {
-      await session.abortTransaction();
       return res.status(400).json({ message: "Restaurant details are required" });
     }
     if (!adminName || !adminEmail || !adminMobile || !adminPassword) {
-      await session.abortTransaction();
       return res.status(400).json({ message: "Admin user details are required" });
     }
     if (adminPassword.length < 6) {
-      await session.abortTransaction();
       return res.status(400).json({ message: "Password must be at least 6 characters" });
     }
 
+    const normalizedAdminEmail = adminEmail.toLowerCase().trim();
+
     // Step 1: Generate unique siteCode
     const siteCode = await generateUniqueSiteCode();
-    
-    // Step 2: Create and save restaurant in Restaurant collection
+
+    // Step 2: Save restaurant
     const restaurant = new Restaurant({
       name: restaurantName,
-      siteCode: siteCode,
+      siteCode,
       email: restaurantEmail.toLowerCase().trim(),
       phone: restaurantPhone,
       status: "ACTIVE",
       createdAt: new Date()
     });
+    await restaurant.save();
+    savedRestaurant = restaurant;
 
-    await restaurant.save({ session });
-    
-    // Step 3: Create default admin user with same siteCode
-    const normalizedAdminEmail = adminEmail.toLowerCase().trim();
-    
-    // Check if admin email already exists for this siteCode
-    const existingUser = await User.findOne({ 
-      siteCode: siteCode, 
-      email: normalizedAdminEmail 
-    }).session(session);
-    
+    // Step 3: Check for duplicate admin email under this siteCode
+    const existingUser = await User.findOne({ siteCode, email: normalizedAdminEmail });
     if (existingUser) {
-      await session.abortTransaction();
-      return res.status(409).json({ 
-        message: "Admin user with this email already exists for this restaurant" 
+      await Restaurant.deleteOne({ _id: restaurant._id });
+      return res.status(409).json({
+        message: "An admin with this email already exists. Please use a different email."
       });
     }
 
+    // Step 4: Save admin user
     const hashedPassword = await bcrypt.hash(adminPassword, 10);
     const adminUser = new User({
-      siteCode: siteCode,
+      siteCode,
       name: adminName,
       email: normalizedAdminEmail,
       mobile: adminMobile,
@@ -96,17 +88,11 @@ exports.createRestaurant = async (req, res) => {
       otp: null,
       otpExpires: null
     });
+    await adminUser.save();
 
-    await adminUser.save({ session });
-    
-    // Commit the transaction
-    await session.commitTransaction();
-    session.endSession();
-
-    // Step 4: Return success response with admin login credentials
     res.status(201).json({
       success: true,
-      message: "Restaurant created successfully with default admin",
+      message: "Restaurant created successfully",
       restaurant: {
         _id: restaurant._id,
         name: restaurant.name,
@@ -118,34 +104,29 @@ exports.createRestaurant = async (req, res) => {
       },
       adminCredentials: {
         email: adminUser.email,
-        password: adminPassword, // Return the plaintext password set by superadmin
+        password: adminPassword,
         role: adminUser.role,
         siteCode: adminUser.siteCode
-      },
-      loginDetails: {
-        siteCode: adminUser.siteCode,
-        email: adminUser.email,
-        // Note: Password should be changed by admin after first login for security
-        temporaryPassword: adminPassword
       }
     });
 
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    
+    // Manual rollback: delete the restaurant if admin save failed
+    if (savedRestaurant) {
+      await Restaurant.deleteOne({ _id: savedRestaurant._id }).catch(() => {});
+    }
+
     console.error("Create restaurant error:", error);
-    
-    // Handle duplicate key error
+
     if (error.code === 11000) {
-      return res.status(409).json({ 
-        message: "Restaurant or user already exists. Please try again." 
+      return res.status(409).json({
+        message: "Restaurant or admin user already exists. Please try again."
       });
     }
-    
-    res.status(500).json({ 
-      message: "Error creating restaurant", 
-      error: error.message 
+
+    res.status(500).json({
+      message: "Error creating restaurant",
+      error: error.message
     });
   }
 };

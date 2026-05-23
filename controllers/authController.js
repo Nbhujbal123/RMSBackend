@@ -345,7 +345,33 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Generate JWT token
+    // For customers: send email OTP instead of issuing token directly
+    if (user.role === 'customer') {
+      const otp = generateOTP();
+      user.otp = otp;
+      user.otpExpires = Date.now() + 10 * 60 * 1000;
+      await user.save();
+
+      try {
+        await sendOtpEmail(
+          user.email,
+          otp,
+          `Your login OTP – ${restaurant.name}`
+        );
+      } catch (emailErr) {
+        console.error("Email OTP send failed:", emailErr.message);
+        return res.status(502).json({
+          message: "Could not send OTP email. Please check mail configuration."
+        });
+      }
+
+      return res.json({
+        otpSent: true,
+        message: "OTP sent to your email. Please verify to complete login."
+      });
+    }
+
+    // Admin / Staff: issue token directly (no OTP needed)
     const token = jwt.sign(
       {
         id: user._id,
@@ -381,6 +407,127 @@ exports.login = async (req, res) => {
       message: "Login failed due to server error",
       error: error.message
     });
+  }
+};
+
+// ========== SEND EMAIL LOGIN OTP (name + email — no password) ==========
+exports.sendEmailLoginOtp = async (req, res) => {
+  try {
+    const { name, email, siteCode } = req.body;
+    const normalizedName  = (name  || "").trim();
+    const normalizedEmail = (email || "").trim().toLowerCase();
+    const normalizedSiteCode = (siteCode || "").toString().toUpperCase().trim();
+
+    if (!normalizedName) {
+      return res.status(400).json({ message: "Name is required" });
+    }
+    const emailRegex = /\S+@\S+\.\S+/;
+    if (!normalizedEmail || !emailRegex.test(normalizedEmail)) {
+      return res.status(400).json({ message: "Valid email address is required" });
+    }
+    if (!normalizedSiteCode) {
+      return res.status(400).json({ message: "Site code is required" });
+    }
+
+    // Validate restaurant
+    const Restaurant = require("../model/restaurantModel");
+    const restaurant = await Restaurant.findOne({ siteCode: normalizedSiteCode });
+    if (!restaurant) {
+      return res.status(404).json({ message: "Restaurant not found for this site code" });
+    }
+    if (restaurant.status !== "ACTIVE") {
+      return res.status(403).json({ message: "This restaurant is currently inactive" });
+    }
+
+    // Find or auto-create customer by email + siteCode
+    let user = await User.findOne({ email: normalizedEmail, siteCode: normalizedSiteCode, role: "customer" });
+
+    if (!user) {
+      const autoPassword = await bcrypt.hash(Math.random().toString(36), 10);
+      user = new User({
+        siteCode: normalizedSiteCode,
+        name: normalizedName,
+        email: normalizedEmail,
+        mobile: "0000000000",
+        password: autoPassword,
+        role: "customer",
+        isVerified: false,
+      });
+    } else {
+      user.name = normalizedName;
+    }
+
+    const otp = generateOTP();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 10 * 60 * 1000;
+    await user.save();
+
+    try {
+      await sendOtpEmail(normalizedEmail, otp, `Your login OTP – ${restaurant.name}`);
+    } catch (emailErr) {
+      console.error("Email OTP send failed:", emailErr.message);
+      return res.status(502).json({ message: "Could not send OTP email. Please check mail configuration." });
+    }
+
+    return res.json({ otpSent: true, message: "OTP sent to your email" });
+  } catch (error) {
+    console.error("Send email login OTP error:", error);
+    res.status(500).json({ message: "Failed to send OTP", error: error.message });
+  }
+};
+
+// ========== VERIFY EMAIL LOGIN OTP ==========
+exports.verifyEmailLoginOtp = async (req, res) => {
+  try {
+    const { email, siteCode, otp } = req.body;
+    const normalizedEmail = (email || "").trim().toLowerCase();
+    const normalizedSiteCode = (siteCode || "").toString().toUpperCase().trim();
+    const normalizedOtp = (otp || "").toString().trim();
+
+    if (!normalizedEmail || !normalizedSiteCode || !normalizedOtp) {
+      return res.status(400).json({ message: "Email, site code, and OTP are required" });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail, siteCode: normalizedSiteCode });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (user.otp !== normalizedOtp) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+    if (!user.otpExpires || user.otpExpires < Date.now()) {
+      return res.status(400).json({ message: "OTP has expired. Please request a new one." });
+    }
+
+    user.isVerified = true;
+    user.otp = null;
+    user.otpExpires = null;
+    await user.save();
+
+    const token = jwt.sign(
+      { id: user._id, siteCode: user.siteCode, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    const Restaurant = require("../model/restaurantModel");
+    const restaurant = await Restaurant.findOne({ siteCode: normalizedSiteCode });
+
+    return res.json({
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        phone: user.mobile,
+        siteCode: user.siteCode,
+        role: user.role,
+      },
+      restaurant: restaurant ? { name: restaurant.name, siteCode: restaurant.siteCode } : null
+    });
+  } catch (error) {
+    console.error("Verify email login OTP error:", error);
+    res.status(500).json({ message: "OTP verification failed", error: error.message });
   }
 };
 
