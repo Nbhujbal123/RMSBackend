@@ -766,6 +766,8 @@ exports.sendLoginOtp = async (req, res) => {
       console.log(`[OTP] Phone: ${normalizedPhone}`);
       console.log(`[OTP] Code : ${otp}`);
       console.log(`==============================\n`);
+      // Return OTP in response so the browser can show it in an alert (SMS not available)
+      return res.json({ message: "OTP sent successfully", otp });
     }
 
     return res.json({ message: "OTP sent successfully" });
