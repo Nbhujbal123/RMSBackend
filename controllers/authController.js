@@ -2,7 +2,7 @@
 const User = require("../model/userModel");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
+const { google } = require("googleapis");
 
 // 🔹 Generate random 6-digit OTP
 const generateOTP = () =>
@@ -55,34 +55,49 @@ const buildOtpHtml = (otp, restaurantName) => `
 </body>
 </html>`;
 
-// 🔹 Send OTP email via Gmail SMTP using App Password
-const sendOtpEmail = async (email, otp, subject, restaurantName = "Restaurant") => {
-  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
-  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
+// 🔹 Send email via Gmail REST API (HTTPS port 443 — not blocked by any host)
+const sendOtpEmail = async (toEmail, otp, subject, restaurantName = "Restaurant") => {
+  const EMAIL_USER          = (process.env.EMAIL_USER          || "").trim();
+  const GMAIL_CLIENT_ID     = (process.env.GMAIL_CLIENT_ID     || "").trim();
+  const GMAIL_CLIENT_SECRET = (process.env.GMAIL_CLIENT_SECRET || "").trim();
+  const GMAIL_REFRESH_TOKEN = (process.env.GMAIL_REFRESH_TOKEN || "").trim();
 
-  if (!EMAIL_USER || !EMAIL_PASS) {
-    throw new Error("EMAIL_USER and EMAIL_PASS must be set in environment variables.");
+  if (!EMAIL_USER || !GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET || !GMAIL_REFRESH_TOKEN) {
+    throw new Error(
+      "Missing Gmail API credentials. Set EMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN in environment variables."
+    );
   }
 
-  // Try port 587 (STARTTLS) first — more widely allowed on cloud hosts
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
-    auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
-  });
+  const oauth2Client = new google.auth.OAuth2(
+    GMAIL_CLIENT_ID,
+    GMAIL_CLIENT_SECRET,
+    "https://developers.google.com/oauthplayground"
+  );
+  oauth2Client.setCredentials({ refresh_token: GMAIL_REFRESH_TOKEN });
 
-  await transporter.sendMail({
-    from: `"${restaurantName}" <${EMAIL_USER}>`,
-    to: email,
-    subject,
-    text: `Your OTP is ${otp}. It will expire in 10 minutes.`,
-    html: buildOtpHtml(otp, restaurantName),
-  });
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
+  const html = buildOtpHtml(otp, restaurantName);
+  const text = `Your OTP is ${otp}. It will expire in 10 minutes.`;
+
+  // Build RFC-2822 MIME message
+  const mime = [
+    `From: "${restaurantName}" <${EMAIL_USER}>`,
+    `To: ${toEmail}`,
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/html; charset="UTF-8"',
+    "",
+    html,
+  ].join("\r\n");
+
+  const raw = Buffer.from(mime)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
   return { sent: true };
 };
 
@@ -892,40 +907,42 @@ exports.testEmail = async (req, res) => {
   const to = req.query.to;
   if (!to) return res.status(400).json({ message: "Pass ?to=your@email.com" });
 
-  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
-  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
+  const EMAIL_USER          = (process.env.EMAIL_USER          || "").trim();
+  const GMAIL_CLIENT_ID     = (process.env.GMAIL_CLIENT_ID     || "").trim();
+  const GMAIL_CLIENT_SECRET = (process.env.GMAIL_CLIENT_SECRET || "").trim();
+  const GMAIL_REFRESH_TOKEN = (process.env.GMAIL_REFRESH_TOKEN || "").trim();
 
-  console.log("EMAIL_USER:", EMAIL_USER || "NOT SET");
-  console.log("EMAIL_PASS:", EMAIL_PASS ? `${EMAIL_PASS.length} chars` : "NOT SET");
-
-  if (!EMAIL_USER || !EMAIL_PASS) {
-    return res.status(500).json({ ok: false, error: "EMAIL_USER or EMAIL_PASS not set in Render environment variables" });
+  const missing = ["EMAIL_USER","GMAIL_CLIENT_ID","GMAIL_CLIENT_SECRET","GMAIL_REFRESH_TOKEN"]
+    .filter(k => !process.env[k]);
+  if (missing.length) {
+    return res.status(500).json({ ok: false, error: `Missing env vars: ${missing.join(", ")}` });
   }
 
   try {
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 587,
-      secure: false,
-      auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 15000,
-    });
+    const oauth2Client = new google.auth.OAuth2(
+      GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET,
+      "https://developers.google.com/oauthplayground"
+    );
+    oauth2Client.setCredentials({ refresh_token: GMAIL_REFRESH_TOKEN });
+    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    await transporter.verify();
-    console.log("SMTP verify OK");
+    const mime = [
+      `From: "RestoM" <${EMAIL_USER}>`,
+      `To: ${to}`,
+      "Subject: RestoM — Email test",
+      "MIME-Version: 1.0",
+      'Content-Type: text/plain; charset="UTF-8"',
+      "",
+      "Gmail API is working correctly on Render.",
+    ].join("\r\n");
 
-    await transporter.sendMail({
-      from: `"RestoM Test" <${EMAIL_USER}>`,
-      to,
-      subject: "RestoM — Email test",
-      text: "If you see this, Gmail SMTP is working correctly on Render.",
-    });
+    const raw = Buffer.from(mime).toString("base64")
+      .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 
+    await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
     return res.json({ ok: true, message: `Test email sent to ${to}` });
   } catch (err) {
-    console.error("Test email error:", err.code, err.message);
-    return res.status(500).json({ ok: false, error: err.message, code: err.code });
+    console.error("Test email error:", err.message);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 };
