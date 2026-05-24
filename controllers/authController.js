@@ -2,7 +2,7 @@
 const User = require("../model/userModel");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const axios = require("axios");
+const nodemailer = require("nodemailer");
 
 // 🔹 Generate random 6-digit OTP
 const generateOTP = () =>
@@ -55,33 +55,34 @@ const buildOtpHtml = (otp, restaurantName) => `
 </body>
 </html>`;
 
-// 🔹 Send OTP email via Brevo HTTP API (no SMTP — works on Render, no custom domain needed)
+// 🔹 Send OTP email via Gmail SMTP using App Password
 const sendOtpEmail = async (email, otp, subject, restaurantName = "Restaurant") => {
-  const BREVO_API_KEY = process.env.BREVO_API_KEY;
-  const EMAIL_USER   = (process.env.EMAIL_USER || "").trim();
+  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
+  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
 
-  if (!BREVO_API_KEY) throw new Error("BREVO_API_KEY not set in environment variables.");
-  if (!EMAIL_USER)    throw new Error("EMAIL_USER not set in environment variables.");
+  if (!EMAIL_USER || !EMAIL_PASS) {
+    throw new Error("EMAIL_USER and EMAIL_PASS must be set in environment variables.");
+  }
 
-  const response = await axios.post(
-    "https://api.brevo.com/v3/smtp/email",
-    {
-      sender:      { name: restaurantName, email: EMAIL_USER },
-      to:          [{ email }],
-      subject,
-      htmlContent: buildOtpHtml(otp, restaurantName),
-      textContent: `Your OTP is ${otp}. It will expire in 10 minutes.`,
-    },
-    {
-      headers: {
-        "api-key":      BREVO_API_KEY,
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    }
-  );
+  // Try port 587 (STARTTLS) first — more widely allowed on cloud hosts
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+  });
 
-  if (response.status !== 201) throw new Error(`Brevo returned status ${response.status}`);
+  await transporter.sendMail({
+    from: `"${restaurantName}" <${EMAIL_USER}>`,
+    to: email,
+    subject,
+    text: `Your OTP is ${otp}. It will expire in 10 minutes.`,
+    html: buildOtpHtml(otp, restaurantName),
+  });
+
   return { sent: true };
 };
 
@@ -891,33 +892,40 @@ exports.testEmail = async (req, res) => {
   const to = req.query.to;
   if (!to) return res.status(400).json({ message: "Pass ?to=your@email.com" });
 
-  const BREVO_API_KEY = process.env.BREVO_API_KEY;
-  const EMAIL_USER    = (process.env.EMAIL_USER || "").trim();
+  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
+  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
 
-  console.log("BREVO_API_KEY:", BREVO_API_KEY ? "SET" : "NOT SET");
-  console.log("EMAIL_USER:",    EMAIL_USER    || "NOT SET");
+  console.log("EMAIL_USER:", EMAIL_USER || "NOT SET");
+  console.log("EMAIL_PASS:", EMAIL_PASS ? `${EMAIL_PASS.length} chars` : "NOT SET");
 
-  if (!BREVO_API_KEY) return res.status(500).json({ ok: false, error: "BREVO_API_KEY not set in environment variables" });
-  if (!EMAIL_USER)    return res.status(500).json({ ok: false, error: "EMAIL_USER not set in environment variables" });
+  if (!EMAIL_USER || !EMAIL_PASS) {
+    return res.status(500).json({ ok: false, error: "EMAIL_USER or EMAIL_PASS not set in Render environment variables" });
+  }
 
   try {
-    const response = await axios.post(
-      "https://api.brevo.com/v3/smtp/email",
-      {
-        sender:      { name: "RestoM", email: EMAIL_USER },
-        to:          [{ email: to }],
-        subject:     "RestoM — Email test",
-        textContent: "If you see this, Brevo email sending is working correctly.",
-      },
-      {
-        headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json" },
-        timeout: 15000,
-      }
-    );
-    return res.json({ ok: true, message: `Test email sent to ${to}`, brevo: response.data });
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false,
+      auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
+    });
+
+    await transporter.verify();
+    console.log("SMTP verify OK");
+
+    await transporter.sendMail({
+      from: `"RestoM Test" <${EMAIL_USER}>`,
+      to,
+      subject: "RestoM — Email test",
+      text: "If you see this, Gmail SMTP is working correctly on Render.",
+    });
+
+    return res.json({ ok: true, message: `Test email sent to ${to}` });
   } catch (err) {
-    const detail = err.response?.data || err.message;
-    console.error("Test email error:", detail);
-    return res.status(500).json({ ok: false, error: detail });
+    console.error("Test email error:", err.code, err.message);
+    return res.status(500).json({ ok: false, error: err.message, code: err.code });
   }
 };
