@@ -20,31 +20,26 @@ const app = express();
 // Use environment PORT (Render provides this) or default to 5000
 const PORT = process.env.PORT || 5000;
 
-// CORS configuration for production deployment
-// Allow requests from Render's domain and localhost for development
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://localhost:5175",
-  "http://localhost:5176", 
-  // Add Render production domain if available in environment
-  ...(process.env.RENDER_EXTERNAL_URL ? [process.env.RENDER_EXTERNAL_URL] : []),
-];
-
-// More permissive CORS for production - allow any Render domain
+// CORS — allow localhost dev, Vercel deployments, and any custom domain
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, Postman)
-    // Or allow if origin is in allowed list
-    // Or allow if we're in production (Render sets RENDER_EXTERNAL_URL)
-    if (!origin || allowedOrigins.includes(origin) || process.env.RENDER_EXTERNAL_URL) {
+    // No origin = curl / Postman / mobile — always allow
+    if (!origin) return callback(null, true);
+
+    // Localhost dev
+    if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
       return callback(null, true);
     }
-    // In development, still allow localhost origins
-    if (origin.startsWith("http://localhost")) {
+
+    // Any Vercel deployment (*.vercel.app)
+    if (origin.endsWith(".vercel.app")) return callback(null, true);
+
+    // Explicit FRONTEND_URL env var (set this on Render to your custom domain)
+    if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
       return callback(null, true);
     }
-    callback(new Error("Not allowed by CORS"));
+
+    callback(new Error("Not allowed by CORS: " + origin));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
