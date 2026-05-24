@@ -1,34 +1,14 @@
 // Backend/controllers/authController.js
 const User = require("../model/userModel");
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer");
 const jwt = require("jsonwebtoken");
+const { Resend } = require("resend");
 
 // 🔹 Generate random 6-digit OTP
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
-// 🔹 Create transporter using Gmail service shorthand (handles host/port automatically)
-const createTransporter = () => {
-  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
-  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
-
-  if (!EMAIL_USER || !EMAIL_PASS) {
-    throw new Error(
-      "Email not configured. Set EMAIL_USER and EMAIL_PASS in environment variables."
-    );
-  }
-
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: EMAIL_USER,
-      pass: EMAIL_PASS,
-    },
-  });
-};
-
-// 🔹 Build a clean HTML OTP email body
+// 🔹 Build HTML OTP email body
 const buildOtpHtml = (otp, restaurantName) => `
 <!DOCTYPE html>
 <html>
@@ -62,8 +42,7 @@ const buildOtpHtml = (otp, restaurantName) => `
             </td>
           </tr>
           <tr>
-            <td style="background:#f9fafb;padding:16px 32px;text-align:center;
-                        border-top:1px solid #eee;">
+            <td style="background:#f9fafb;padding:16px 32px;text-align:center;border-top:1px solid #eee;">
               <p style="color:#bbb;font-size:12px;margin:0;">
                 © ${new Date().getFullYear()} ${restaurantName} · Powered by RestoM
               </p>
@@ -76,18 +55,24 @@ const buildOtpHtml = (otp, restaurantName) => `
 </body>
 </html>`;
 
-// 🔹 Send OTP email
+// 🔹 Send OTP email via Resend HTTP API (works on all cloud hosts — no SMTP ports needed)
 const sendOtpEmail = async (email, otp, subject, restaurantName = "Restaurant") => {
-  const transporter = createTransporter();
+  const RESEND_API_KEY = process.env.RESEND_API_KEY;
+  if (!RESEND_API_KEY) {
+    throw new Error("RESEND_API_KEY not set in environment variables.");
+  }
 
-  await transporter.sendMail({
-    from: `"${restaurantName}" <${(process.env.EMAIL_USER || "").trim()}>`,
+  const resend = new Resend(RESEND_API_KEY);
+
+  const { error } = await resend.emails.send({
+    from: "RestoM <onboarding@resend.dev>",
     to: email,
     subject,
-    text: `Your OTP is ${otp}. It will expire in 10 minutes.`,
     html: buildOtpHtml(otp, restaurantName),
+    text: `Your OTP is ${otp}. It will expire in 10 minutes.`,
   });
 
+  if (error) throw new Error(error.message);
   return { sent: true };
 };
 
@@ -897,38 +882,26 @@ exports.testEmail = async (req, res) => {
   const to = req.query.to;
   if (!to) return res.status(400).json({ message: "Pass ?to=your@email.com" });
 
-  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
-  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
+  const RESEND_API_KEY = process.env.RESEND_API_KEY;
+  console.log("RESEND_API_KEY loaded:", RESEND_API_KEY ? "YES" : "NOT SET");
 
-  console.log("EMAIL_USER loaded:", EMAIL_USER ? EMAIL_USER : "NOT SET");
-  console.log("EMAIL_PASS loaded:", EMAIL_PASS ? `${EMAIL_PASS.length} chars` : "NOT SET");
-
-  if (!EMAIL_USER || !EMAIL_PASS) {
-    return res.status(500).json({
-      ok: false,
-      error: "EMAIL_USER or EMAIL_PASS not set in environment variables",
-    });
+  if (!RESEND_API_KEY) {
+    return res.status(500).json({ ok: false, error: "RESEND_API_KEY not set in environment variables" });
   }
 
   try {
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-    });
-
-    await transporter.verify();
-    console.log("SMTP verify OK");
-
-    await transporter.sendMail({
-      from: `"RestoM Test" <${EMAIL_USER}>`,
+    const { Resend } = require("resend");
+    const resend = new Resend(RESEND_API_KEY);
+    const { data, error } = await resend.emails.send({
+      from: "RestoM <onboarding@resend.dev>",
       to,
-      subject: "RestoM — SMTP test",
-      text: "If you see this, email sending is working correctly.",
+      subject: "RestoM — Email test",
+      text: "If you see this, email sending is working correctly via Resend.",
     });
-
-    return res.json({ ok: true, message: `Test email sent to ${to}` });
+    if (error) throw new Error(error.message);
+    return res.json({ ok: true, message: `Test email sent to ${to}`, id: data?.id });
   } catch (err) {
     console.error("Test email error:", err);
-    return res.status(500).json({ ok: false, error: err.message, code: err.code });
+    return res.status(500).json({ ok: false, error: err.message });
   }
 };
