@@ -14,6 +14,7 @@ const {
   verifyLoginOtp,
   sendEmailLoginOtp,
   verifyEmailLoginOtp,
+  testEmail,
 } = require("../controllers/authController");
 
 // Public routes - no siteCode required
@@ -35,5 +36,8 @@ router.post("/verify-email-login-otp", verifyEmailLoginOtp);
 
 // Helper route to ensure superadmin exists (can be called once on setup)
 router.get("/ensure-superadmin", ensureSuperAdminExists);
+
+// Debug: test email sending — GET /api/auth/test-email?to=your@email.com
+router.get("/test-email", testEmail);
 
 module.exports = router;

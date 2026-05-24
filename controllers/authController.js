@@ -4,39 +4,90 @@ const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
 const jwt = require("jsonwebtoken");
 
-// 🔹 Setup email transporter
-const EMAIL_USER = process.env.EMAIL_USER?.trim();
-const EMAIL_PASS = process.env.EMAIL_PASS?.replace(/\s+/g, "");
-
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: EMAIL_USER,
-    // Gmail app passwords are often copied with spaces; remove them safely
-    pass: EMAIL_PASS,
-  },
-});
-
 // 🔹 Generate random 6-digit OTP
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
-// 🔹 Send OTP email helper with local-dev fallback
-const sendOtpEmail = async (email, otp, subject) => {
+// 🔹 Create transporter using Gmail service shorthand (handles host/port automatically)
+const createTransporter = () => {
+  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
+  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
+
   if (!EMAIL_USER || !EMAIL_PASS) {
-    throw new Error("Email service is not configured. Check EMAIL_USER/EMAIL_PASS.");
+    throw new Error(
+      "Email not configured. Set EMAIL_USER and EMAIL_PASS in environment variables."
+    );
   }
 
-  const mailOptions = {
-    from: `"RestoM App" <${EMAIL_USER}>`,
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: EMAIL_USER,
+      pass: EMAIL_PASS,
+    },
+  });
+};
+
+// 🔹 Build a clean HTML OTP email body
+const buildOtpHtml = (otp, restaurantName) => `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:30px 0;">
+    <tr>
+      <td align="center">
+        <table width="480" cellpadding="0" cellspacing="0"
+               style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#FF6A00,#FFA500);padding:28px 32px;text-align:center;">
+              <h1 style="color:#fff;margin:0;font-size:22px;">🍽️ ${restaurantName}</h1>
+              <p style="color:rgba(255,255,255,0.9);margin:6px 0 0;font-size:14px;">Login Verification</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 32px;text-align:center;">
+              <p style="color:#555;font-size:15px;margin:0 0 24px;">
+                Use the code below to complete your login. It expires in <strong>10 minutes</strong>.
+              </p>
+              <div style="display:inline-block;background:#fff7f0;border:2px dashed #FF6A00;
+                          border-radius:12px;padding:18px 40px;margin:0 0 24px;">
+                <span style="font-size:36px;font-weight:700;letter-spacing:10px;color:#FF6A00;">
+                  ${otp}
+                </span>
+              </div>
+              <p style="color:#999;font-size:13px;margin:0;">
+                If you did not request this, please ignore this email.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f9fafb;padding:16px 32px;text-align:center;
+                        border-top:1px solid #eee;">
+              <p style="color:#bbb;font-size:12px;margin:0;">
+                © ${new Date().getFullYear()} ${restaurantName} · Powered by RestoM
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+// 🔹 Send OTP email
+const sendOtpEmail = async (email, otp, subject, restaurantName = "Restaurant") => {
+  const transporter = createTransporter();
+
+  await transporter.sendMail({
+    from: `"${restaurantName}" <${(process.env.EMAIL_USER || "").trim()}>`,
     to: email,
     subject,
     text: `Your OTP is ${otp}. It will expire in 10 minutes.`,
-  };
+    html: buildOtpHtml(otp, restaurantName),
+  });
 
-  await transporter.sendMail(mailOptions);
   return { sent: true };
 };
 
@@ -110,7 +161,7 @@ exports.signup = async (req, res) => {
     await user.save();
 
     try {
-      await sendOtpEmail(normalizedEmail, otp, `Verify your email - ${restaurant.name}`);
+      await sendOtpEmail(normalizedEmail, otp, `Verify your email - ${restaurant.name}`, restaurant.name);
       return res.status(201).json({ message: "OTP sent to email" });
     } catch (emailError) {
       console.error("Signup OTP email send failed:", emailError.message);
@@ -356,7 +407,8 @@ exports.login = async (req, res) => {
         await sendOtpEmail(
           user.email,
           otp,
-          `Your login OTP – ${restaurant.name}`
+          `Your login OTP – ${restaurant.name}`,
+          restaurant.name
         );
       } catch (emailErr) {
         console.error("Email OTP send failed:", emailErr.message);
@@ -463,10 +515,16 @@ exports.sendEmailLoginOtp = async (req, res) => {
     await user.save();
 
     try {
-      await sendOtpEmail(normalizedEmail, otp, `Your login OTP – ${restaurant.name}`);
+      await sendOtpEmail(normalizedEmail, otp, `Your login OTP – ${restaurant.name}`, restaurant.name);
+      console.log(`[OTP] Email sent to ${normalizedEmail}, code: ${otp}`);
     } catch (emailErr) {
-      console.error("Email OTP send failed:", emailErr.message);
-      return res.status(502).json({ message: "Could not send OTP email. Please check mail configuration." });
+      console.error("Email OTP send failed:", emailErr.code, emailErr.message);
+      // EAUTH = wrong App Password / 2FA not enabled
+      const hint =
+        emailErr.code === "EAUTH"
+          ? "Gmail authentication failed. Regenerate the App Password at myaccount.google.com/apppasswords."
+          : emailErr.message;
+      return res.status(502).json({ message: `Could not send OTP email: ${hint}` });
     }
 
     return res.json({ otpSent: true, message: "OTP sent to your email" });
@@ -831,5 +889,46 @@ exports.createSuperAdmin = async (req, res) => {
   } catch (error) {
     console.error("Create superadmin error:", error);
     res.status(500).json({ message: "Failed to create superadmin", error: error.message });
+  }
+};
+
+// ========== TEST EMAIL (debug — call GET /api/auth/test-email?to=you@example.com) ==========
+exports.testEmail = async (req, res) => {
+  const to = req.query.to;
+  if (!to) return res.status(400).json({ message: "Pass ?to=your@email.com" });
+
+  const EMAIL_USER = (process.env.EMAIL_USER || "").trim();
+  const EMAIL_PASS = (process.env.EMAIL_PASS || "").replace(/\s+/g, "");
+
+  console.log("EMAIL_USER loaded:", EMAIL_USER ? EMAIL_USER : "NOT SET");
+  console.log("EMAIL_PASS loaded:", EMAIL_PASS ? `${EMAIL_PASS.length} chars` : "NOT SET");
+
+  if (!EMAIL_USER || !EMAIL_PASS) {
+    return res.status(500).json({
+      ok: false,
+      error: "EMAIL_USER or EMAIL_PASS not set in environment variables",
+    });
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+    });
+
+    await transporter.verify();
+    console.log("SMTP verify OK");
+
+    await transporter.sendMail({
+      from: `"RestoM Test" <${EMAIL_USER}>`,
+      to,
+      subject: "RestoM — SMTP test",
+      text: "If you see this, email sending is working correctly.",
+    });
+
+    return res.json({ ok: true, message: `Test email sent to ${to}` });
+  } catch (err) {
+    console.error("Test email error:", err);
+    return res.status(500).json({ ok: false, error: err.message, code: err.code });
   }
 };
