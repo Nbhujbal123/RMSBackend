@@ -2,7 +2,7 @@
 const User = require("../model/userModel");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { Resend } = require("resend");
+const axios = require("axios");
 
 // 🔹 Generate random 6-digit OTP
 const generateOTP = () =>
@@ -55,24 +55,33 @@ const buildOtpHtml = (otp, restaurantName) => `
 </body>
 </html>`;
 
-// 🔹 Send OTP email via Resend HTTP API (works on all cloud hosts — no SMTP ports needed)
+// 🔹 Send OTP email via Brevo HTTP API (no SMTP — works on Render, no custom domain needed)
 const sendOtpEmail = async (email, otp, subject, restaurantName = "Restaurant") => {
-  const RESEND_API_KEY = process.env.RESEND_API_KEY;
-  if (!RESEND_API_KEY) {
-    throw new Error("RESEND_API_KEY not set in environment variables.");
-  }
+  const BREVO_API_KEY = process.env.BREVO_API_KEY;
+  const EMAIL_USER   = (process.env.EMAIL_USER || "").trim();
 
-  const resend = new Resend(RESEND_API_KEY);
+  if (!BREVO_API_KEY) throw new Error("BREVO_API_KEY not set in environment variables.");
+  if (!EMAIL_USER)    throw new Error("EMAIL_USER not set in environment variables.");
 
-  const { error } = await resend.emails.send({
-    from: "RestoM <onboarding@resend.dev>",
-    to: email,
-    subject,
-    html: buildOtpHtml(otp, restaurantName),
-    text: `Your OTP is ${otp}. It will expire in 10 minutes.`,
-  });
+  const response = await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      sender:      { name: restaurantName, email: EMAIL_USER },
+      to:          [{ email }],
+      subject,
+      htmlContent: buildOtpHtml(otp, restaurantName),
+      textContent: `Your OTP is ${otp}. It will expire in 10 minutes.`,
+    },
+    {
+      headers: {
+        "api-key":      BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    }
+  );
 
-  if (error) throw new Error(error.message);
+  if (response.status !== 201) throw new Error(`Brevo returned status ${response.status}`);
   return { sent: true };
 };
 
@@ -882,26 +891,33 @@ exports.testEmail = async (req, res) => {
   const to = req.query.to;
   if (!to) return res.status(400).json({ message: "Pass ?to=your@email.com" });
 
-  const RESEND_API_KEY = process.env.RESEND_API_KEY;
-  console.log("RESEND_API_KEY loaded:", RESEND_API_KEY ? "YES" : "NOT SET");
+  const BREVO_API_KEY = process.env.BREVO_API_KEY;
+  const EMAIL_USER    = (process.env.EMAIL_USER || "").trim();
 
-  if (!RESEND_API_KEY) {
-    return res.status(500).json({ ok: false, error: "RESEND_API_KEY not set in environment variables" });
-  }
+  console.log("BREVO_API_KEY:", BREVO_API_KEY ? "SET" : "NOT SET");
+  console.log("EMAIL_USER:",    EMAIL_USER    || "NOT SET");
+
+  if (!BREVO_API_KEY) return res.status(500).json({ ok: false, error: "BREVO_API_KEY not set in environment variables" });
+  if (!EMAIL_USER)    return res.status(500).json({ ok: false, error: "EMAIL_USER not set in environment variables" });
 
   try {
-    const { Resend } = require("resend");
-    const resend = new Resend(RESEND_API_KEY);
-    const { data, error } = await resend.emails.send({
-      from: "RestoM <onboarding@resend.dev>",
-      to,
-      subject: "RestoM — Email test",
-      text: "If you see this, email sending is working correctly via Resend.",
-    });
-    if (error) throw new Error(error.message);
-    return res.json({ ok: true, message: `Test email sent to ${to}`, id: data?.id });
+    const response = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender:      { name: "RestoM", email: EMAIL_USER },
+        to:          [{ email: to }],
+        subject:     "RestoM — Email test",
+        textContent: "If you see this, Brevo email sending is working correctly.",
+      },
+      {
+        headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json" },
+        timeout: 15000,
+      }
+    );
+    return res.json({ ok: true, message: `Test email sent to ${to}`, brevo: response.data });
   } catch (err) {
-    console.error("Test email error:", err);
-    return res.status(500).json({ ok: false, error: err.message });
+    const detail = err.response?.data || err.message;
+    console.error("Test email error:", detail);
+    return res.status(500).json({ ok: false, error: detail });
   }
 };
