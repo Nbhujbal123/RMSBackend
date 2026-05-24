@@ -735,42 +735,13 @@ exports.sendLoginOtp = async (req, res) => {
       user.name = normalizedName;
     }
 
-    // Generate OTP
-    const otp = generateOTP();
+    // Dummy OTP for demo — always 123456
+    const otp = "123456";
     user.otp = otp;
     user.otpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
     await user.save();
 
-    // Try Twilio SMS if configured
-    const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID;
-    const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-    const TWILIO_PHONE = process.env.TWILIO_PHONE;
-
-    let smsSent = false;
-    if (TWILIO_SID && TWILIO_TOKEN && TWILIO_PHONE) {
-      try {
-        const twilio = require("twilio")(TWILIO_SID, TWILIO_TOKEN);
-        await twilio.messages.create({
-          body: `Your ${restaurant.name} login OTP is: ${otp}. Valid for 10 minutes.`,
-          from: TWILIO_PHONE,
-          to: `+91${normalizedPhone}`,
-        });
-        smsSent = true;
-      } catch (smsError) {
-        console.error("Twilio SMS failed:", smsError.message);
-      }
-    }
-
-    if (!smsSent) {
-      console.log(`\n=============================`);
-      console.log(`[OTP] Phone: ${normalizedPhone}`);
-      console.log(`[OTP] Code : ${otp}`);
-      console.log(`==============================\n`);
-      // Return OTP in response so the browser can show it in an alert (SMS not available)
-      return res.json({ message: "OTP sent successfully", otp });
-    }
-
-    return res.json({ message: "OTP sent successfully" });
+    return res.json({ message: "OTP sent successfully", otp });
   } catch (error) {
     console.error("Send login OTP error:", error.message);
     res.status(500).json({ message: "Failed to send OTP", error: error.message });
