@@ -13,6 +13,8 @@ const orderRoutes = require("./Routes/orderRoutes");
 const billRoutes = require("./Routes/billRoutes");
 const restaurantRoutes = require("./Routes/restaurantRoutes");
 const superAdminRoutes = require("./Routes/superAdminRoutes");
+const adminRoutes = require("./Routes/adminRoutes");
+const chiefRoutes = require("./Routes/chiefRoutes");
 const dashboardRoutes = require("./Routes/dashboardRoutes");
 
 const app = express();
@@ -54,6 +56,8 @@ app.use(express.json()); // replaces body-parser
 // ---------- Routes ----------
 app.use("/api/auth", authRoutes);
 app.use("/api/superadmin", superAdminRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/chief", chiefRoutes);
 app.use("/api/restaurants", restaurantRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/menu", menuRoutes);

@@ -12,10 +12,10 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true },
   mobile: { type: String, required: true },
   password: { type: String, required: true },
-  role: { 
-    type: String, 
-    enum: ["superadmin", "admin", "staff", "customer"], 
-    default: "customer" 
+  role: {
+    type: String,
+    enum: ["superadmin", "admin", "staff", "customer", "chief"],
+    default: "customer"
   },
   otp: { type: String },
   otpExpires: { type: Date },
