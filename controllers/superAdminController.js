@@ -270,6 +270,36 @@ exports.createStaffUser = async (req, res) => {
   }
 };
 
+// Delete a restaurant and all its associated data
+exports.deleteRestaurant = async (req, res) => {
+  try {
+    const { siteCode } = req.params;
+    const code = siteCode.toUpperCase();
+
+    const restaurant = await Restaurant.findOne({ siteCode: code });
+    if (!restaurant) {
+      return res.status(404).json({ message: "Restaurant not found" });
+    }
+
+    const Order = require("../model/orderModel");
+    const Bill = require("../model/billModel");
+    const MenuItem = require("../model/menuItemModel");
+
+    await Promise.all([
+      Restaurant.deleteOne({ siteCode: code }),
+      User.deleteMany({ siteCode: code }),
+      Order.deleteMany({ siteCode: code }),
+      Bill.deleteMany({ siteCode: code }),
+      MenuItem.deleteMany({ siteCode: code }),
+    ]);
+
+    res.json({ message: `Restaurant "${restaurant.name}" and all its data have been deleted.` });
+  } catch (error) {
+    console.error("Delete restaurant error:", error);
+    res.status(500).json({ message: "Error deleting restaurant", error: error.message });
+  }
+};
+
 // Get dashboard summary for superadmin (aggregate stats across all restaurants)
 exports.getDashboardSummary = async (req, res) => {
   try {

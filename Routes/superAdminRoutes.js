@@ -9,7 +9,8 @@ const {
   getRestaurantBySiteCode,
   getRestaurantUsers,
   createStaffUser,
-  getDashboardSummary
+  getDashboardSummary,
+  deleteRestaurant
 } = require("../controllers/superAdminController");
 
 // All routes require superadmin authentication
@@ -32,6 +33,9 @@ router.get("/restaurants/:siteCode/users", getRestaurantUsers);
 
 // Create staff user for a restaurant
 router.post("/restaurants/:siteCode/users", createStaffUser);
+
+// Delete a restaurant and all its data
+router.delete("/restaurants/:siteCode", deleteRestaurant);
 
 // Get dashboard summary for superadmin
 router.get("/dashboard-summary", getDashboardSummary);
