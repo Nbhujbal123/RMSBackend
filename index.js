@@ -2,9 +2,11 @@
 require("dotenv").config();
 
 const express = require("express");
+const http = require("http");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const path = require("path");
+const socket = require("./socket");
 
 // Routes
 const authRoutes = require("./Routes/authRoutes");
@@ -18,6 +20,8 @@ const chiefRoutes = require("./Routes/chiefRoutes");
 const dashboardRoutes = require("./Routes/dashboardRoutes");
 
 const app = express();
+const server = http.createServer(app);
+socket.init(server);
 
 // Use environment PORT (Render provides this) or default to 5000
 const PORT = process.env.PORT || 5000;
@@ -145,7 +149,7 @@ const startServer = async () => {
     await MenuItem.collection.dropIndex("id_1").catch(() => {});
   } catch (_) {}
 
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT} (DB: ${source})`);
     if (process.env.RENDER_EXTERNAL_URL) {
       console.log(`   Production: ${process.env.RENDER_EXTERNAL_URL}`);

@@ -2,6 +2,7 @@
 const Order = require("../model/orderModel");
 const Bill = require("../model/billModel");
 const User = require("../model/userModel");
+const { emitToSite } = require("../socket");
 
 // Create a new order
 exports.createOrder = async (req, res) => {
@@ -31,6 +32,9 @@ exports.createOrder = async (req, res) => {
 
     await newOrder.save();
     console.log("Order saved:", newOrder);
+
+    // Notify admin/chief dashboards in real time
+    emitToSite(siteCode, "order:new", { order: newOrder });
 
     res
       .status(201)
@@ -177,103 +181,167 @@ exports.getOrderById = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared billing helper — called by both admin and chief when an order
+// reaches COMPLETED / DELIVERED status.
+//
+// Rules:
+//   • Registered user  → find existing UNPAID bill by customerId in this site.
+//                         If found, MERGE (add items, add to total).
+//                         If not found, create a new bill.
+//   • Guest with table → find existing UNPAID bill by tableNumber in this site.
+//                         Same merge-or-create logic.
+//   • Guest with email → find existing UNPAID bill by customerEmail (no userId).
+//                         Same merge-or-create logic.
+//   • No match         → create a new bill.
+// ─────────────────────────────────────────────────────────────────────────────
+const mergeItems = (existingItems, newItems) => {
+  // Clone existing items as plain objects (no Mongoose subdoc quirks)
+  const merged = existingItems.map((i) => ({
+    productId: i.productId,
+    name: i.name,
+    price: i.price,
+    quantity: i.quantity,
+  }));
+
+  for (const newItem of newItems) {
+    const idx = merged.findIndex((i) => i.productId === newItem.productId);
+    if (idx !== -1) {
+      merged[idx].quantity += newItem.quantity; // same dish ordered again → add qty
+    } else {
+      merged.push(newItem); // new dish → append
+    }
+  }
+  return merged;
+};
+
+const processBilling = async (order) => {
+  const siteCode = order.siteCode;
+
+  const billItems = order.items.map((item) => ({
+    productId: item.menuItemId,
+    name: item.name,
+    price: item.price,
+    quantity: item.quantity,
+  }));
+
+  const orderSubtotal =
+    order.total ||
+    order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  if (order.user) {
+    // ── Registered user ──────────────────────────────────────────────────────
+    const userDoc = order.user; // already populated with name/email
+
+    const existing = await Bill.findOne({
+      siteCode,
+      customerId: userDoc._id,
+      status: "UNPAID",
+    });
+
+    if (existing) {
+      // Merge new order into the existing unpaid bill
+      const merged = mergeItems(existing.items, billItems);
+      await Bill.findByIdAndUpdate(existing._id, {
+        $set: { items: merged },
+        $push: { orderIds: order._id },
+        $inc: { subtotal: orderSubtotal, totalAmount: orderSubtotal },
+      });
+      console.log(`Bill ${existing._id} updated (+₹${orderSubtotal}) for ${userDoc.name}`);
+    } else {
+      // First order — create a fresh bill
+      const bill = new Bill({
+        siteCode,
+        customerId: userDoc._id,
+        customerName: userDoc.name,
+        customerEmail: userDoc.email,
+        orderIds: [order._id],
+        items: billItems,
+        subtotal: orderSubtotal,
+        totalAmount: orderSubtotal,
+        status: "UNPAID",
+      });
+      await bill.save();
+      console.log(`New bill ${bill._id} created for ${userDoc.name} ₹${orderSubtotal}`);
+    }
+  } else {
+    // ── Guest order ───────────────────────────────────────────────────────────
+    const customerName = order.customer?.name || "Guest Customer";
+    const customerEmail = order.customer?.email || "";
+    const customerPhone = order.customer?.phone || "";
+    const tableNumber = order.tableNumber || "";
+
+    // Try to find existing unpaid bill: prefer table match, fall back to email
+    let existing = null;
+    if (tableNumber) {
+      existing = await Bill.findOne({ siteCode, tableNumber, status: "UNPAID" });
+    }
+    if (!existing && customerEmail) {
+      existing = await Bill.findOne({
+        siteCode,
+        customerEmail,
+        customerId: null,   // guest bills only
+        status: "UNPAID",
+      });
+    }
+
+    if (existing) {
+      const merged = mergeItems(existing.items, billItems);
+      await Bill.findByIdAndUpdate(existing._id, {
+        $set: { items: merged },
+        $push: { orderIds: order._id },
+        $inc: { subtotal: orderSubtotal, totalAmount: orderSubtotal },
+      });
+      console.log(`Guest bill ${existing._id} updated (+₹${orderSubtotal})`);
+    } else {
+      const bill = new Bill({
+        siteCode,
+        customerName,
+        customerEmail,
+        customerPhone,
+        tableNumber,
+        orderIds: [order._id],
+        items: billItems,
+        subtotal: orderSubtotal,
+        totalAmount: orderSubtotal,
+        status: "UNPAID",
+      });
+      await bill.save();
+      console.log(`New guest bill ${bill._id} created ₹${orderSubtotal}`);
+    }
+  }
+
+  // Mark order as billed regardless of merge / create
+  await Order.findByIdAndUpdate(order._id, { isBilled: true });
+};
+
+exports.processBilling = processBilling;
+
 // Update order status by id (for admin)
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    console.log("=== UPDATE ORDER STATUS ===");
-    console.log("Order ID:", req.params.id);
-    console.log("New Status:", status);
-    
+
     const updatedOrder = await Order.findByIdAndUpdate(
       req.params.id,
       { orderStatus: status },
       { new: true }
     ).populate("user", "name email");
-    
+
     if (!updatedOrder) {
-      console.log("Order not found!");
       return res.status(404).json({ message: "Order not found" });
     }
-    
-    console.log("Order updated. isBilled:", updatedOrder.isBilled);
-    console.log("Order customer data:", updatedOrder.customer);
 
-    // If order is completed/delivered, always create/update bill
-    // This ensures each completed order gets its own bill
     if (status === "COMPLETED" || status === "DELIVERED") {
-      console.log("=== PROCESSING BILLING ===");
-      console.log("Order " + updatedOrder._id + " status changed to " + status + ". Processing billing.");
-      
-      // Get siteCode from the order
-      const siteCode = updatedOrder.siteCode;
-      
-      // Process billing for all orders (registered users and guest orders)
-      const billItems = updatedOrder.items.map((item) => ({
-        productId: item.menuItemId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-      }));
-
-      if (updatedOrder.user) {
-        // Registered user - create a new bill for this order
-        const userDoc = updatedOrder.user;
-        console.log("Registered user - customerId:", userDoc._id);
-        console.log("Creating new bill for customer " + userDoc.name + " with siteCode:", siteCode);
-        
-        // Create new bill for this specific order
-        const orderSubtotal = updatedOrder.total || updatedOrder.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-        const newBill = new Bill({
-          siteCode,
-          customerId: userDoc._id,
-          customerName: userDoc.name,
-          customerEmail: userDoc.email,
-          orderIds: [updatedOrder._id],
-          items: billItems,
-          subtotal: orderSubtotal,
-          totalAmount: orderSubtotal,
-          status: "UNPAID",
-        });
-        await newBill.save();
-        console.log("New bill created: " + newBill._id + " for " + newBill.totalAmount);
-      } else {
-        // Guest order - create a new bill for this order
-        console.log("Guest order - creating bill for order " + updatedOrder._id);
-        console.log("Customer info:", updatedOrder.customer);
-        
-        // Get customer info from the order
-        const customerName = updatedOrder.customer?.name || 'Guest Customer';
-        const customerEmail = updatedOrder.customer?.email || '';
-        const customerPhone = updatedOrder.customer?.phone || '';
-        const tableNumber = updatedOrder.tableNumber || '';
-        
-        console.log("Creating new bill for guest:" , { customerName, customerEmail, tableNumber });
-        
-        // Create new bill for this specific order
-        const orderSubtotal = updatedOrder.total || updatedOrder.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-        const newBill = new Bill({
-          siteCode,
-          customerName: customerName,
-          customerEmail: customerEmail,
-          customerPhone: customerPhone,
-          tableNumber: tableNumber,
-          orderIds: [updatedOrder._id],
-          items: billItems,
-          subtotal: orderSubtotal,
-          totalAmount: orderSubtotal,
-          status: "UNPAID",
-        });
-        await newBill.save();
-        console.log("New guest bill created: " + newBill._id + " for " + newBill.totalAmount);
-      }
-
-      // Mark order as billed
-      await Order.findByIdAndUpdate(updatedOrder._id, { isBilled: true });
-      console.log("Order " + updatedOrder._id + " marked as isBilled: true");
-    } else {
-      console.log("No billing needed. Status:", status, ", isBilled:", updatedOrder.isBilled);
+      await processBilling(updatedOrder);
     }
+
+    // Notify all clients in this restaurant's room (customers, admin, chief)
+    emitToSite(updatedOrder.siteCode, "order:status-updated", {
+      orderId: updatedOrder._id,
+      status,
+      order: updatedOrder,
+    });
 
     res.json({ message: "Order status updated", order: updatedOrder });
   } catch (error) {
@@ -306,67 +374,12 @@ exports.generateBillsForCompletedOrders = async (req, res) => {
     console.log(`Found ${completedOrders.length} completed orders without bills`);
     
     let billsCreated = 0;
-    let billsUpdated = 0;
-    
+    const billsUpdated = 0;
+
     for (const order of completedOrders) {
       console.log(`\nProcessing order: ${order._id}, Status: ${order.orderStatus}, isBilled: ${order.isBilled}`);
-      
-      const billItems = order.items.map((item) => ({
-        productId: item.menuItemId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-      }));
-
-      const customerName = order.customer?.name || order.user?.name || 'Guest Customer';
-      const customerEmail = order.customer?.email || order.user?.email || '';
-      const customerPhone = order.customer?.phone || '';
-      const tableNumber = order.tableNumber || '';
-      
-      if (order.user) {
-        // Registered user - create a new bill for this order
-        const userDoc = order.user;
-        console.log("Creating new bill for customer " + userDoc.name);
-        
-        // Create new bill for this specific order
-        const orderSubtotal = order.total || order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-        const newBill = new Bill({
-          siteCode,
-          customerId: userDoc._id,
-          customerName: userDoc.name,
-          customerEmail: userDoc.email,
-          orderIds: [order._id],
-          items: billItems,
-          subtotal: orderSubtotal,
-          totalAmount: orderSubtotal,
-          status: "UNPAID",
-        });
-        await newBill.save();
-        billsCreated++;
-      } else {
-        // Guest order - create a new bill for this order
-        console.log("Creating new bill for guest: " + customerName);
-        
-        // Create new bill for this specific order
-        const orderSubtotal = order.total || order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-        const newBill = new Bill({
-          siteCode,
-          customerName: customerName,
-          customerEmail: customerEmail,
-          customerPhone: customerPhone,
-          tableNumber: tableNumber,
-          orderIds: [order._id],
-          items: billItems,
-          subtotal: orderSubtotal,
-          totalAmount: orderSubtotal,
-          status: "UNPAID",
-        });
-        await newBill.save();
-        billsCreated++;
-      }
-      
-      // Mark order as billed
-      await Order.findByIdAndUpdate(order._id, { isBilled: true });
+      await processBilling(order);
+      billsCreated++;
     }
     
     console.log(`\n=== SUMMARY ===`);

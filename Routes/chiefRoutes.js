@@ -3,6 +3,8 @@ const express = require("express");
 const router = express.Router();
 const { chiefMiddleware } = require("../middleware/superAdminMiddleware");
 const Order = require("../model/orderModel");
+const { emitToSite } = require("../socket");
+const { processBilling } = require("../controllers/orderController");
 
 router.use(chiefMiddleware);
 
@@ -57,6 +59,20 @@ router.put("/orders/:id/status", async (req, res) => {
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
+
+    // Create / merge bill when order is completed
+    if (status === "COMPLETED" || status === "DELIVERED") {
+      // Populate user so processBilling can read name/email
+      const populated = await Order.findById(order._id).populate("user", "name email");
+      await processBilling(populated || order);
+    }
+
+    // Notify all clients in this restaurant in real time
+    emitToSite(siteCode, "order:status-updated", {
+      orderId: order._id,
+      status,
+      order,
+    });
 
     res.json({ message: "Order status updated", order });
   } catch (error) {

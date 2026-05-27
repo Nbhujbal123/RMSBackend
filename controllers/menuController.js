@@ -1,5 +1,6 @@
 // Backend/controllers/menuController.js
 const MenuItem = require("../model/menuItemModel");
+const { emitToSite } = require("../socket");
 
 // Get all menu items
 exports.getAllMenuItems = async (req, res) => {
@@ -85,6 +86,7 @@ exports.createMenuItem = async (req, res) => {
     });
 
     await newMenuItem.save();
+    emitToSite(siteCode, "menu:updated", { action: "create", item: newMenuItem });
     res.status(201).json({
       message: "Menu item created successfully",
       menuItem: newMenuItem,
@@ -121,6 +123,7 @@ exports.updateMenuItem = async (req, res) => {
     if (!updatedItem)
       return res.status(404).json({ message: "Menu item not found" });
 
+    emitToSite(siteCode, "menu:updated", { action: "update", item: updatedItem });
     res.json({
       message: "Menu item updated successfully",
       menuItem: updatedItem,
@@ -139,6 +142,7 @@ exports.deleteMenuItem = async (req, res) => {
     const deletedItem = await MenuItem.findOneAndDelete({ siteCode, id: req.params.id });
     if (!deletedItem)
       return res.status(404).json({ message: "Menu item not found" });
+    emitToSite(siteCode, "menu:updated", { action: "delete", item: deletedItem });
     res.json({ message: "Menu item deleted successfully" });
   } catch (error) {
     res
