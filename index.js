@@ -69,6 +69,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/bills", billRoutes);
 
 // ---------- Health Check ----------
+//nothing just for commit change
 app.get("/", (req, res) => {
   res.status(200).send("🚀 Server is running fine!");
 });
